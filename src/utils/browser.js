@@ -1,4 +1,11 @@
-const puppeteer = require("puppeteer");
+// puppeteer-extra + stealth: el headless plano de puppeteer expone señales
+// triviales de detectar (navigator.webdriver, falta de chrome.runtime, etc.)
+// que sitios con anti-bot revisan antes de servir el video real. El plugin
+// stealth parcha esas señales para que el navegador headless se vea como
+// una sesión de Chrome real.
+const puppeteer = require("puppeteer-extra");
+const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+puppeteer.use(StealthPlugin());
 
 let browserInstance = null;
 

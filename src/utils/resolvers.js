@@ -6,6 +6,7 @@ const {
   findFirstUrl,
   isLikelyVideoUrl,
   normalizeExtractedUrl,
+  DEFAULT_HEADERS,
 } = require("./http");
 
 // Shared browser instance
@@ -32,6 +33,81 @@ function debugLog(server, message, data) {
   } else {
     console.log(header);
   }
+}
+
+// Los resolvers "rapidos" (axios, sin navegador) encuentran la URL del
+// manifiesto correctamente, pero varios hosts (streamwish/vidhide comparten
+// backend) le sirven a peticiones sin sesion de navegador real un manifiesto
+// con forma valida pero segmentos falsos (pixeles de tracking de un CDN de
+// ads), o directamente un bloqueo de Cloudflare con content-type text/html.
+// Antes esto se contaba como "resuelto" y nunca se le daba la oportunidad
+// al fallback de Puppeteer (que sí carga la pagina real e intercepta la
+// peticion de red real, con mucha mas chance de conseguir un link valido).
+// Esta validacion evita esa falsa confianza.
+const DECOY_HOST_RE = /tiktokcdn\.com$/i;
+const DECOY_PATH_RE = /\/ad-site-i18n-sg\//i;
+
+function looksLikeDecoySegment(uri) {
+  try {
+    const u = new URL(uri);
+    if (DECOY_HOST_RE.test(u.hostname)) return true;
+    if (DECOY_PATH_RE.test(u.pathname)) return true;
+    if (/\.image(\?|$)/i.test(u.pathname)) return true;
+  } catch (_e) {
+    return false;
+  }
+  return false;
+}
+
+function firstUriAfter(playlistText, marker, baseUrl) {
+  const lines = playlistText.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trim().startsWith(marker)) {
+      const uri = lines[i + 1]?.trim();
+      if (uri && !uri.startsWith("#")) {
+        try {
+          return new URL(uri, baseUrl).toString();
+        } catch (_e) {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function isUrlActuallyServing(url) {
+  try {
+    if (/\.m3u8(\?|$)/i.test(url)) {
+      const res = await fetch(url, { headers: { "User-Agent": DEFAULT_HEADERS["User-Agent"] } });
+      if (!res.ok) return false;
+      const text = await res.text();
+      if (!/^#EXTM3U/.test(text.trim())) return false;
+      const variant = firstUriAfter(text, "#EXT-X-STREAM-INF", url);
+      const playlistText = variant ? await (await fetch(variant)).text() : text;
+      const playlistBase = variant || url;
+      const segment = firstUriAfter(playlistText, "#EXTINF", playlistBase);
+      if (!segment) return true;
+      return !looksLikeDecoySegment(segment);
+    }
+    if (/\.mp4(\?|$)/i.test(url)) {
+      const res = await fetch(url, { method: "HEAD" });
+      return res.ok;
+    }
+    // Extension desconocida (ej. un ".txt" disfrazado de manifiesto) — suele
+    // ser una pagina de bloqueo; solo aceptamos si no parece HTML de error.
+    const res = await fetch(url);
+    if (!res.ok) return false;
+    const contentType = res.headers.get("content-type") || "";
+    return !contentType.includes("text/html");
+  } catch (_e) {
+    return false;
+  }
+}
+
+async function validateAndReturn(url) {
+  if (!url) return null;
+  return (await isUrlActuallyServing(url)) ? url : null;
 }
 
 function getRefererForUrl(url) {
@@ -420,44 +496,49 @@ async function resolveEmbedUrl(url, parentUrl = null) {
   debugLog("resolveEmbed", `Host: ${host}, Path: ${pathname}`, url);
 
   // 1. High Performance Modular Resolvers
+  // Cada resultado pasa por validateAndReturn() antes de aceptarse: estos
+  // resolvers "rapidos" (sin navegador) a veces encuentran una URL con forma
+  // correcta pero que el host no sirve de verdad a una peticion sin sesion
+  // de navegador (señuelo o bloqueo). Si no valida, seguimos probando el
+  // resto de la cascada en vez de darla por buena.
   if (/wish|awish|playnix|medix|niramirus|kravaxxa|davioad|haxlopp|tryzendm|dumbalag|dhcplay|hglink/i.test(host)) {
-    const resolved = await extractStreamwish(url);
+    const resolved = await validateAndReturn(await extractStreamwish(url));
     if (resolved) return resolved;
   }
 
   if (/streamtape/i.test(host)) {
-    const resolved = await extractStreamtape(url);
+    const resolved = await validateAndReturn(await extractStreamtape(url));
     if (resolved) return resolved;
   }
 
   if (/voe/i.test(host) || /\/e\//.test(pathname)) {
-    const resolved = await extractVoe(url);
+    const resolved = await validateAndReturn(await extractVoe(url));
     if (resolved) return resolved;
   }
 
   // 2. Specific Inline Resolvers
   if (/hqq\.tv|netu|waaw/i.test(host)) {
-    const resolved = await resolveHqqUrl(url, referer);
+    const resolved = await validateAndReturn(await resolveHqqUrl(url, referer));
     if (resolved) return resolved;
   }
 
   if (/vidhide/i.test(host)) {
-    const resolved = await resolveVidhideUrl(url, referer);
+    const resolved = await validateAndReturn(await resolveVidhideUrl(url, referer));
     if (resolved) return resolved;
   }
 
   if (/mixdrop|mxdcontent/i.test(host)) {
-    const resolved = await resolveMixdropUrl(url, referer);
+    const resolved = await validateAndReturn(await resolveMixdropUrl(url, referer));
     if (resolved) return resolved;
   }
 
   if (/dood|dstream|ds2play|doods/i.test(host)) {
-    const resolved = await resolveDoodstreamUrl(url, referer);
+    const resolved = await validateAndReturn(await resolveDoodstreamUrl(url, referer));
     if (resolved) return resolved;
   }
 
   if (/dropload|dr0pstream|drop\.download/i.test(host)) {
-    const resolved = await resolveDroploadUrl(url, referer);
+    const resolved = await validateAndReturn(await resolveDroploadUrl(url, referer));
     if (resolved) return resolved;
   }
 
@@ -477,7 +558,7 @@ async function resolveEmbedUrl(url, parentUrl = null) {
 
   // 2.5. yt-dlp High-Speed Resolver (as fallback before Puppeteer)
   if (ytdlpResolver.isAvailable) {
-    const ytdlpResolved = await ytdlpResolver.extractWithYtdlp(url, referer);
+    const ytdlpResolved = await validateAndReturn(await ytdlpResolver.extractWithYtdlp(url, referer));
     if (ytdlpResolved) return ytdlpResolved;
   }
 
