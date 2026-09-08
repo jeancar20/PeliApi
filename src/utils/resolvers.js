@@ -19,6 +19,7 @@ const ytdlpResolver = require("./resolvers/ytdlp.resolver");
 const { extractVoe } = require("./resolvers/voe.resolver");
 const { extractStreamwish } = require("./resolvers/streamwish.resolver");
 const { extractStreamtape } = require("./resolvers/streamtape.resolver");
+const { extractUqload } = require("./resolvers/uqload.resolver");
 
 const DEBUG_MODE = process.env.DEBUG_RESOLVER === "true" || process.env.DEBUG_DOWNLOAD === "true";
 
@@ -516,6 +517,14 @@ async function resolveEmbedUrl(url, parentUrl = null) {
     if (resolved) return resolved;
   }
 
+  // uqload.com/uqload.vc: confirmado en pruebas manuales sin proteccion de
+  // Cloudflare — segmentos reales servidos sin bloqueo. Mismo empaquetado
+  // JWPlayer que streamwish, sin la indireccion de dominio espejo.
+  if (/uqload/i.test(host)) {
+    const resolved = await validateAndReturn(await extractUqload(url));
+    if (resolved) return resolved;
+  }
+
   // 2. Specific Inline Resolvers
   if (/hqq\.tv|netu|waaw/i.test(host)) {
     const resolved = await validateAndReturn(await resolveHqqUrl(url, referer));
@@ -584,6 +593,7 @@ module.exports = {
   resolveStreamwishUrl: extractStreamwish,
   resolveStreamtapeUrl: extractStreamtape,
   resolveVoeUrl: extractVoe,
+  resolveUqloadUrl: extractUqload,
   resolveVidhideUrl,
   resolveHqqUrl,
   resolveMixdropUrl,

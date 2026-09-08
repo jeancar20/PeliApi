@@ -1,10 +1,16 @@
 const { scrapeWithPage } = require("../utils/browser");
 
+// ww9.cuevana3.to redirige (302) a ww11 — confirmado en vivo que ww11 sigue
+// vivo y filtra bien por query; apuntamos directo para evitar depender de un
+// redirect en cada scrape, y para poder ajustarlo por env var el día que
+// vuelva a cambiar (igual que PELISPLUS_DOMAIN).
+const CUEVANA_DOMAIN = process.env.CUEVANA_DOMAIN || "https://ww11.cuevana3.to";
+
 /**
  * Busca contenido en Cuevana3 usando Puppeteer
  */
 async function searchContent(query) {
-  const url = `https://ww9.cuevana3.to/?s=${encodeURIComponent(query)}`;
+  const url = `${CUEVANA_DOMAIN}/?s=${encodeURIComponent(query)}`;
   
   return scrapeWithPage(url, () => {
     const results = [];
@@ -26,7 +32,9 @@ async function searchContent(query) {
         
         let poster = imgEl ? (imgEl.getAttribute('data-src') || imgEl.src) : '';
         if (poster && poster.startsWith('/')) {
-          poster = 'https://ww9.cuevana3.to' + poster;
+          // Corre dentro de page.evaluate() (contexto del navegador) — no
+          // tiene acceso al CUEVANA_DOMAIN de Node, por eso queda fijo acá.
+          poster = 'https://ww11.cuevana3.to' + poster;
         }
 
         results.push({
@@ -59,14 +67,16 @@ async function searchContent(query) {
  * Obtiene la información detallada de una película o serie de Cuevana3
  */
 async function getContentInfo(slug, type = "movie") {
-  const url = `https://ww9.cuevana3.to/${slug}`;
+  const url = `${CUEVANA_DOMAIN}/${slug}`;
   
   const result = await scrapeWithPage(url, () => {
     const title = document.querySelector('h1.Title')?.textContent.trim() || '';
     const synopsis = document.querySelector('.Description p, .Description')?.textContent.trim() || '';
     let poster = document.querySelector('.Image img')?.src || '';
     if (poster && poster.startsWith('/')) {
-      poster = 'https://ww9.cuevana3.to' + poster;
+      // Corre dentro de page.evaluate() (contexto del navegador) — no tiene
+      // acceso al CUEVANA_DOMAIN de Node, por eso queda fijo acá.
+      poster = 'https://ww11.cuevana3.to' + poster;
     }
     
     const yearMatch = document.querySelector('.InfoList li')?.textContent.trim().match(/\d{4}/);
@@ -200,7 +210,7 @@ async function getContentInfo(slug, type = "movie") {
 async function getEpisodeServers(serieSlug, seasonNumber, episodeNumber) {
   // Los capítulos en Cuevana3 tienen la estructura /episodio/slug-temporadaxcapitulo
   const coreSlug = serieSlug.replace("serie/", "");
-  const url = `https://ww9.cuevana3.to/episodio/${coreSlug}-${seasonNumber}x${episodeNumber}`;
+  const url = `${CUEVANA_DOMAIN}/episodio/${coreSlug}-${seasonNumber}x${episodeNumber}`;
 
   const result = await scrapeWithPage(url, () => {
     const servers = [];

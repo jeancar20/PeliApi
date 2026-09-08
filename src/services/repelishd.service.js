@@ -3,7 +3,10 @@ const { fetchHtml } = require("../utils/http");
 const { ApiError } = require("../utils/api-error");
 const axios = require("axios");
 
-const BASE_URL = process.env.REPELISHD_DOMAIN || "https://repelishd.ceo";
+// repelishd.ceo dejó de servir (ahora redirige, y un 30x en un POST puede
+// degradar a GET y perder el body) — confirmado en vivo que repelishd.courses
+// es el mirror activo hoy con el mismo motor DLE (do=search/subaction=search).
+const BASE_URL = process.env.REPELISHD_DOMAIN || "https://repelishd.courses";
 
 /**
  * Normaliza las URLs para que siempre sean absolutas
@@ -87,7 +90,7 @@ async function searchContent(query) {
 
     return uniqueResults;
   } catch (error) {
-    console.error("Error in RePelisHD searchContent:", error.message);
+    console.error("Error in RePelisHD searchContent:", error.message, "status:", error.response?.status);
     return [];
   }
 }

@@ -38,9 +38,14 @@ router.get(
     let data = [];
     let source = "aggregate";
 
-    // 1. Buscamos en PelisPlus y RePelisHD en paralelo (ambos son ultraligeros con Cheerio)
+    // Buscamos en los 3 proveedores en paralelo — antes Cuevana3 (Puppeteer,
+    // más lento) solo se consultaba si PelisPlus+RePelisHD devolvían vacío,
+    // lo que en la práctica limitaba mucho el pool de hosts de embed
+    // disponible por título (cada proveedor tiene su propio ecosistema de
+    // servidores). Promise.all no suma latencias, así que el costo es solo
+    // el del más lento de los tres, no la suma.
     try {
-      const [ppData, rpData] = await Promise.all([
+      const [ppData, rpData, cuData] = await Promise.all([
         pelisplusService.searchContent(query).catch(err => {
           console.error("Error buscando en PelisPlus:", err.message);
           return [];
@@ -48,13 +53,18 @@ router.get(
         repelishdService.searchContent(query).catch(err => {
           console.error("Error buscando en RePelisHD:", err.message);
           return [];
+        }),
+        cuevanaService.searchContent(query).catch(err => {
+          console.error("Error buscando en Cuevana3:", err.message);
+          return [];
         })
       ]);
 
       const ppMapped = (ppData || []).map(item => ({ ...item, provider: "pelisplus" }));
       const rpMapped = (rpData || []).map(item => ({ ...item, provider: "repelishd" }));
-      
-      data = [...rpMapped, ...ppMapped];
+      const cuMapped = (cuData || []).map(item => ({ ...item, provider: "cuevana3" }));
+
+      data = [...rpMapped, ...ppMapped, ...cuMapped];
 
       // Ordenar inteligentemente los resultados combinados para poner las coincidencias más cercanas al query al principio
       const lowerQuery = query.toLowerCase().trim();
@@ -84,21 +94,10 @@ router.get(
       });
 
       if (data.length > 0) {
-        source = rpMapped.length > 0 ? "repelishd" : "pelisplus";
+        source = rpMapped.length > 0 ? "repelishd" : (ppMapped.length > 0 ? "pelisplus" : "cuevana3");
       }
     } catch (error) {
       console.error("Error en búsqueda paralela:", error.message);
-    }
-
-    // 2. Si aún no obtuvimos resultados, probamos en Cuevana3 (Puppeteer, más lento)
-    if (data.length === 0) {
-      try {
-        const cuevanaData = await cuevanaService.searchContent(query);
-        data = (cuevanaData || []).map(item => ({ ...item, provider: "cuevana3" }));
-        source = "cuevana3";
-      } catch (error) {
-        console.error("Error buscando en Cuevana3:", error.message);
-      }
     }
 
     res.status(200).json({
