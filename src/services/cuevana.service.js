@@ -11,19 +11,27 @@ const CUEVANA_DOMAIN = process.env.CUEVANA_DOMAIN || "https://ww11.cuevana3.to";
  */
 async function searchContent(query) {
   const url = `${CUEVANA_DOMAIN}/?s=${encodeURIComponent(query)}`;
-  // Cuevana3 llena el <ul class="MovieList"> vacio via AJAX despues de la
-  // carga inicial — confirmado en vivo (el HTML crudo trae el contenedor
-  // vacio). Esperamos a que aparezca antes de leer.
-  const RESULTS_SELECTOR = '.MovieList .TPost, .MovieList li';
+  // Cuevana3 llena el <ul class="MovieList"> de resultados via AJAX despues
+  // de la carga inicial — confirmado en vivo (el HTML crudo trae ese
+  // contenedor vacio). Esperamos a que el PRIMER .MovieList (el de
+  // resultados de busqueda) tenga hijos antes de leer.
+  const waitForResults = () => {
+    const list = document.querySelectorAll('.MovieList')[0];
+    return !!list && list.children.length > 0;
+  };
 
   return scrapeWithPage(url, () => {
     const results = [];
-    // OJO: sin el scope ".MovieList", un ".TPost" a secas matchea un widget
-    // de tendencias presente en TODA pagina del sitio (no depende de la
-    // busqueda) — eso era lo que hacia que siempre devolviera la misma
-    // lista sin importar el query. Confirmado comparando una query real
-    // (trae resultados) contra una inventada (trae [] con el scope correcto).
-    const elements = document.querySelectorAll('.MovieList .TPost, .MovieList li');
+    // OJO: la clase ".MovieList" se reusa en OTRO widget de tendencias en
+    // la misma pagina (no depende de la busqueda) — un selector global
+    // como ".MovieList .TPost" (sin importar CUAL .MovieList) termina
+    // agarrando ese widget ademas del de resultados reales, y por eso
+    // Cuevana3 siempre devolvia la misma lista sin importar el query.
+    // Confirmado: document.querySelector('.MovieList') (el primero, que es
+    // el de resultados) estaba vacio incluso cuando querySelectorAll global
+    // traia 40 elementos. Por eso acá escaneamos SOLO el primero.
+    const resultsList = document.querySelectorAll('.MovieList')[0];
+    const elements = resultsList ? resultsList.querySelectorAll('.TPost, li') : [];
     elements.forEach(el => {
       const linkEl = el.querySelector('a');
       const titleEl = el.querySelector('.Title');
@@ -69,7 +77,7 @@ async function searchContent(query) {
       }
     }
     return uniqueResults;
-  }, RESULTS_SELECTOR);
+  }, waitForResults);
 }
 
 /**

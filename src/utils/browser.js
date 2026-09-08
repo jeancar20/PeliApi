@@ -102,7 +102,7 @@ async function fetchPageContent(url) {
   }
 }
 
-async function scrapeWithPage(url, scraperFn, waitForSelector = null) {
+async function scrapeWithPage(url, scraperFn, waitForFn = null) {
   await acquireSlot();
   try {
     const browser = await getBrowser();
@@ -122,10 +122,12 @@ async function scrapeWithPage(url, scraperFn, waitForSelector = null) {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
       // Algunos sitios (ej. Cuevana3) cargan el contenido real via AJAX
       // despues del DOMContentLoaded — sin esperar, se lee el contenedor
-      // vacio. Timeout corto con catch: si genuinamente no hay resultados,
-      // seguimos y el scraperFn correctamente encuentra 0 elementos.
-      if (waitForSelector) {
-        await page.waitForSelector(waitForSelector, { timeout: 5000 }).catch(() => {});
+      // vacio. waitForFn es una funcion (se serializa a page.evaluate) que
+      // debe devolver true cuando el contenido esperado ya está — timeout
+      // corto con catch: si genuinamente no hay resultados, seguimos y el
+      // scraperFn correctamente encuentra 0 elementos.
+      if (waitForFn) {
+        await page.waitForFunction(waitForFn, { timeout: 5000 }).catch(() => {});
       }
       const result = await page.evaluate(scraperFn);
       return result;
