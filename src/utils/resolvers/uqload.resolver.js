@@ -11,10 +11,12 @@ async function extractUqload(pageUrl) {
   try {
     let html;
     try {
+      // OJO: mandar un Referer (incluso el mismo pageUrl) hace que uqload
+      // devuelva una página stub de ~40 bytes en vez de la real — confirmado
+      // en pruebas manuales. No mandar Referer en absoluto.
       const res = await axiosGet(pageUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          'Referer': pageUrl,
         },
       });
       html = res.data;
