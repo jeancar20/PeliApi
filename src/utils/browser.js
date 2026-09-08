@@ -102,7 +102,7 @@ async function fetchPageContent(url) {
   }
 }
 
-async function scrapeWithPage(url, scraperFn) {
+async function scrapeWithPage(url, scraperFn, waitForSelector = null) {
   await acquireSlot();
   try {
     const browser = await getBrowser();
@@ -120,6 +120,13 @@ async function scrapeWithPage(url, scraperFn) {
 
       await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
+      // Algunos sitios (ej. Cuevana3) cargan el contenido real via AJAX
+      // despues del DOMContentLoaded — sin esperar, se lee el contenedor
+      // vacio. Timeout corto con catch: si genuinamente no hay resultados,
+      // seguimos y el scraperFn correctamente encuentra 0 elementos.
+      if (waitForSelector) {
+        await page.waitForSelector(waitForSelector, { timeout: 5000 }).catch(() => {});
+      }
       const result = await page.evaluate(scraperFn);
       return result;
     } finally {

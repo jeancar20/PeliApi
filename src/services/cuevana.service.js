@@ -11,10 +11,19 @@ const CUEVANA_DOMAIN = process.env.CUEVANA_DOMAIN || "https://ww11.cuevana3.to";
  */
 async function searchContent(query) {
   const url = `${CUEVANA_DOMAIN}/?s=${encodeURIComponent(query)}`;
-  
+  // Cuevana3 llena el <ul class="MovieList"> vacio via AJAX despues de la
+  // carga inicial — confirmado en vivo (el HTML crudo trae el contenedor
+  // vacio). Esperamos a que aparezca antes de leer.
+  const RESULTS_SELECTOR = '.MovieList .TPost, .MovieList li';
+
   return scrapeWithPage(url, () => {
     const results = [];
-    const elements = document.querySelectorAll('.MovieList .TPost, .MovieList li, .TPost');
+    // OJO: sin el scope ".MovieList", un ".TPost" a secas matchea un widget
+    // de tendencias presente en TODA pagina del sitio (no depende de la
+    // busqueda) — eso era lo que hacia que siempre devolviera la misma
+    // lista sin importar el query. Confirmado comparando una query real
+    // (trae resultados) contra una inventada (trae [] con el scope correcto).
+    const elements = document.querySelectorAll('.MovieList .TPost, .MovieList li');
     elements.forEach(el => {
       const linkEl = el.querySelector('a');
       const titleEl = el.querySelector('.Title');
@@ -60,7 +69,7 @@ async function searchContent(query) {
       }
     }
     return uniqueResults;
-  });
+  }, RESULTS_SELECTOR);
 }
 
 /**
