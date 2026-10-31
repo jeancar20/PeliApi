@@ -41,11 +41,14 @@ app.use(express.json({ limit: "1mb" }));
 app.use(morgan("dev"));
 
 // Rate Limiting
+// DISABLE_RATE_LIMIT=true (servicio interno detras de neo-holly) tambien apaga estos limitadores;
+// antes solo apagaba el limite diario y /search + /resolve seguian en 5/min compartidos (429)
+const rateLimitDisabled = String(process.env.DISABLE_RATE_LIMIT).toLowerCase() === "true";
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 20,
   // /stream retransmite video (HLS = decenas de peticiones por minuto): no cuenta
-  skip: (req) => req.originalUrl.startsWith("/api/v1/content/stream"),
+  skip: (req) => rateLimitDisabled || req.originalUrl.startsWith("/api/v1/content/stream"),
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: "Demasiadas peticiones. Espera 1 minuto." }
@@ -54,6 +57,7 @@ const apiLimiter = rateLimit({
 const scrapeLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 5,
+  skip: () => rateLimitDisabled,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: "Límite de scrapeo alcanzado. Espera 1 minuto." }
