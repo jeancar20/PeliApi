@@ -1,4 +1,5 @@
 const express = require("express");
+const axios = require("axios");
 const { dailyRateLimit } = require("../middlewares/rate-limit");
 const pelisplusService = require("../services/pelisplus.service");
 const cuevanaService = require("../services/cuevana.service");
@@ -377,6 +378,96 @@ router.get(
       data,
       source: "pelisplus",
     });
+  })
+);
+
+/**
+ * Retransmite un video (mp4/m3u8/segmentos) por la salida de ESTE servicio (WARP).
+ * GET /stream?url=https://cdn/v.mp4&referer=https://host-del-embed/
+ *
+ * Los enlaces que resuelven hosts como Mixdrop llevan una firma atada a la IP que los
+ * pidió: solo reproducen desde aquí (WARP). El cliente (neo-holly) pide el video por esta
+ * ruta, con Range para poder saltar en el timeline, en vez de abrirlo con su propia IP.
+ * Solo escucha dentro de la red de docker (no está publicado al exterior); aun así rechaza
+ * destinos internos para no servir de salto hacia la red privada.
+ */
+function isSafeStreamTarget(raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch (_e) {
+    return false;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  const host = u.hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".local") || host.endsWith(".internal")) return false;
+  if (host.includes(":")) return false; // IPv6 literal
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    const [a, b] = host.split(".").map(Number);
+    if (a === 10 || a === 127 || a === 0 || a >= 224) return false;
+    if (a === 169 && b === 254) return false;
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 168) return false;
+    if (a === 100 && b >= 64 && b <= 127) return false;
+  }
+  return host.includes(".");
+}
+
+router.get(
+  "/stream",
+  asyncHandler(async (req, res) => {
+    const target = req.query.url;
+    const referer = req.query.referer || "";
+    if (!target || !isSafeStreamTarget(String(target))) {
+      throw new ApiError(400, "El parametro 'url' es requerido y debe ser un destino publico http(s)");
+    }
+
+    const headers = {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      Accept: "*/*",
+      "Accept-Encoding": "identity",
+    };
+    if (referer) {
+      headers.Referer = String(referer);
+      headers.Origin = String(referer).replace(/\/$/, "");
+    }
+    if (req.headers.range) {
+      headers.Range = req.headers.range;
+    }
+
+    // Si el cliente corta (salto en el timeline, cambio de servidor) se corta la descarga
+    const abort = new AbortController();
+    res.on("close", () => abort.abort());
+
+    let upstream;
+    try {
+      upstream = await axios.get(String(target), {
+        headers,
+        responseType: "stream",
+        timeout: 20000,
+        maxRedirects: 5,
+        signal: abort.signal,
+        validateStatus: (status) => status >= 200 && status < 300,
+        beforeRedirect: (options) => {
+          if (!isSafeStreamTarget(`${options.protocol || "https:"}//${options.hostname}${options.path || "/"}`)) {
+            throw new Error("Redireccion a un destino no permitido");
+          }
+        },
+      });
+    } catch (error) {
+      if (abort.signal.aborted) return;
+      const status = error.response ? error.response.status : null;
+      throw new ApiError(502, status ? `El host respondio ${status}` : `No se pudo contactar al host: ${error.message}`);
+    }
+
+    res.status(upstream.status);
+    for (const name of ["content-type", "content-length", "content-range", "accept-ranges"]) {
+      if (upstream.headers[name]) res.setHeader(name, upstream.headers[name]);
+    }
+    res.setHeader("Cache-Control", "private, max-age=60");
+    upstream.data.on("error", () => res.destroy());
+    upstream.data.pipe(res);
   })
 );
 

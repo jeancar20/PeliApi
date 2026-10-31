@@ -44,6 +44,8 @@ app.use(morgan("dev"));
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 20,
+  // /stream retransmite video (HLS = decenas de peticiones por minuto): no cuenta
+  skip: (req) => req.originalUrl.startsWith("/api/v1/content/stream"),
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: "Demasiadas peticiones. Espera 1 minuto." }
