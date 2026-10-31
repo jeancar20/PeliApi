@@ -15,6 +15,9 @@ const { getBrowser } = require("./browser");
 // yt-dlp high-speed resolver
 const ytdlpResolver = require("./resolvers/ytdlp.resolver");
 
+// Hosts como Mixdrop/Dropload entregan el player con JS empaquetado (P.A.C.K.E.R.)
+const { unpackAll } = require("./unpacker");
+
 // Modular high-performance resolvers
 const { extractVoe } = require("./resolvers/voe.resolver");
 const { extractStreamwish } = require("./resolvers/streamwish.resolver");
@@ -77,27 +80,37 @@ function firstUriAfter(playlistText, marker, baseUrl) {
   return null;
 }
 
-async function isUrlActuallyServing(url) {
+async function isUrlActuallyServing(url, referer = "") {
+  // Muchos CDNs de video (mixdrop, dropload…) solo sirven con el Referer/Origin de
+  // su propio embed; validar sin él descartaba URLs que sí reproducen.
+  const headers = { "User-Agent": DEFAULT_HEADERS["User-Agent"] };
+  if (referer) {
+    headers.Referer = referer;
+    headers.Origin = referer.replace(/\/$/, "");
+  }
   try {
     if (/\.m3u8(\?|$)/i.test(url)) {
-      const res = await fetch(url, { headers: { "User-Agent": DEFAULT_HEADERS["User-Agent"] } });
+      const res = await fetch(url, { headers });
       if (!res.ok) return false;
       const text = await res.text();
       if (!/^#EXTM3U/.test(text.trim())) return false;
       const variant = firstUriAfter(text, "#EXT-X-STREAM-INF", url);
-      const playlistText = variant ? await (await fetch(variant)).text() : text;
+      const playlistText = variant ? await (await fetch(variant, { headers })).text() : text;
       const playlistBase = variant || url;
       const segment = firstUriAfter(playlistText, "#EXTINF", playlistBase);
       if (!segment) return true;
       return !looksLikeDecoySegment(segment);
     }
     if (/\.mp4(\?|$)/i.test(url)) {
-      const res = await fetch(url, { method: "HEAD" });
-      return res.ok;
+      const head = await fetch(url, { method: "HEAD", headers });
+      if (head.ok) return true;
+      // Algunos CDNs no aceptan HEAD (403/405): probar con un GET de 1 byte
+      const probe = await fetch(url, { headers: { ...headers, Range: "bytes=0-0" } });
+      return probe.ok || probe.status === 206;
     }
     // Extension desconocida (ej. un ".txt" disfrazado de manifiesto) — suele
     // ser una pagina de bloqueo; solo aceptamos si no parece HTML de error.
-    const res = await fetch(url);
+    const res = await fetch(url, { headers });
     if (!res.ok) return false;
     const contentType = res.headers.get("content-type") || "";
     return !contentType.includes("text/html");
@@ -106,9 +119,9 @@ async function isUrlActuallyServing(url) {
   }
 }
 
-async function validateAndReturn(url) {
+async function validateAndReturn(url, referer = "") {
   if (!url) return null;
-  return (await isUrlActuallyServing(url)) ? url : null;
+  return (await isUrlActuallyServing(url, referer)) ? url : null;
 }
 
 function getRefererForUrl(url) {
@@ -309,8 +322,10 @@ async function resolveHqqUrl(url, referer) {
 async function resolveMixdropUrl(url, referer) {
   debugLog("Mixdrop", "Resolving URL", url);
   try {
-    const { html } = await fetchHtmlWithHeaders(url, referer);
-    debugLog("Mixdrop", "Fetched HTML length", html.length);
+    const { html: rawHtml } = await fetchHtmlWithHeaders(url, referer);
+    debugLog("Mixdrop", "Fetched HTML length", rawHtml.length);
+    // La URL (MDCore.wurl = "...") va dentro de un eval(function(p,a,c,k,e,d)...) empaquetado
+    const html = [rawHtml, ...unpackAll(rawHtml)].join("\n");
 
     const patterns = [
       /MDCore\.wurl\s*=\s*"([^"]+)"/i,
@@ -364,55 +379,6 @@ async function resolveDoodstreamUrl(url, referer) {
         const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
         let randomStr = "";
         for (let i = 0; i < 10; i++) {
-          randomStr += chars.charAt(Mock.floor(Math.random() * chars.length) || 0); // Math.floor (typo fix: Math instead of Mock if needed, but let's check)
-        }
-        // Let's use Math.floor
-        const directUrl = `${tokenUrl}${randomStr}?token=${passMatch[0].split("/").pop()}&expiry=${Date.now()}`;
-        debugLog("Doodstream", "Constructed direct URL", directUrl);
-        return directUrl;
-      }
-    }
-
-    const extracted = findFirstUrl(html, [
-      /(https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*)/i,
-      /(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i,
-      /"file"\s*:\s*"([^"]+)"/i,
-      /source\s*src\s*=\s*["']([^"']+)["']/i,
-    ]);
-
-    if (extracted) {
-      debugLog("Doodstream", "Found fallback URL", extracted);
-      return extracted;
-    }
-
-    debugLog("Doodstream", "No URL found");
-    return null;
-  } catch (err) {
-    debugLog("Doodstream", "Error", err.message);
-    return null;
-  }
-}
-
-// Typo fix: we will use Math.floor in resolveDoodstreamUrl below
-async function resolveDoodstreamUrl(url, referer) {
-  debugLog("Doodstream", "Resolving URL", url);
-  try {
-    let embedUrl = url.replace(/\/d\//, "/e/");
-    const { html } = await fetchHtmlWithHeaders(embedUrl, referer);
-    debugLog("Doodstream", "Fetched HTML length", html.length);
-
-    const passMatch = html.match(/\/pass_md5\/[^'"\s]+/i);
-    if (passMatch) {
-      const passUrl = `https://${new URL(embedUrl).hostname}${passMatch[0]}`;
-      debugLog("Doodstream", "Fetching pass_md5 token", passUrl);
-
-      const tokenResponse = await fetchHtmlWithHeaders(passUrl, embedUrl);
-      const tokenUrl = tokenResponse.html.trim();
-
-      if (tokenUrl && (tokenUrl.startsWith("http") || tokenUrl.startsWith("//"))) {
-        const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-        let randomStr = "";
-        for (let i = 0; i < 10; i++) {
           randomStr += chars.charAt(Math.floor(Math.random() * chars.length));
         }
         const expiry = Date.now();
@@ -445,8 +411,10 @@ async function resolveDoodstreamUrl(url, referer) {
 async function resolveDroploadUrl(url, referer) {
   debugLog("Dropload", "Resolving URL", url);
   try {
-    const { html } = await fetchHtmlWithHeaders(url, referer);
-    debugLog("Dropload", "Fetched HTML length", html.length);
+    const { html: rawHtml } = await fetchHtmlWithHeaders(url, referer);
+    debugLog("Dropload", "Fetched HTML length", rawHtml.length);
+    // El player (jwplayer.setup({sources:[{file:...}]})) viene empaquetado con P.A.C.K.E.R.
+    const html = [rawHtml, ...unpackAll(rawHtml)].join("\n");
 
     const extracted = findFirstUrl(html, [
       /(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i,
@@ -493,6 +461,7 @@ async function resolveEmbedUrl(url, parentUrl = null) {
   const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
   const pathname = parsed.pathname.toLowerCase();
   const referer = getRefererForUrl(parentUrl || url);
+  const embedReferer = `${parsed.origin}/`; // Referer con el que el CDN espera ver al player
 
   debugLog("resolveEmbed", `Host: ${host}, Path: ${pathname}`, url);
 
@@ -503,17 +472,17 @@ async function resolveEmbedUrl(url, parentUrl = null) {
   // de navegador (señuelo o bloqueo). Si no valida, seguimos probando el
   // resto de la cascada en vez de darla por buena.
   if (/wish|awish|playnix|medix|niramirus|kravaxxa|davioad|haxlopp|tryzendm|dumbalag|dhcplay|hglink/i.test(host)) {
-    const resolved = await validateAndReturn(await extractStreamwish(url));
+    const resolved = await validateAndReturn(await extractStreamwish(url), embedReferer);
     if (resolved) return resolved;
   }
 
   if (/streamtape/i.test(host)) {
-    const resolved = await validateAndReturn(await extractStreamtape(url));
+    const resolved = await validateAndReturn(await extractStreamtape(url), embedReferer);
     if (resolved) return resolved;
   }
 
   if (/voe/i.test(host) || /\/e\//.test(pathname)) {
-    const resolved = await validateAndReturn(await extractVoe(url));
+    const resolved = await validateAndReturn(await extractVoe(url), embedReferer);
     if (resolved) return resolved;
   }
 
@@ -521,33 +490,33 @@ async function resolveEmbedUrl(url, parentUrl = null) {
   // Cloudflare — segmentos reales servidos sin bloqueo. Mismo empaquetado
   // JWPlayer que streamwish, sin la indireccion de dominio espejo.
   if (/uqload/i.test(host)) {
-    const resolved = await validateAndReturn(await extractUqload(url));
+    const resolved = await validateAndReturn(await extractUqload(url), embedReferer);
     if (resolved) return resolved;
   }
 
   // 2. Specific Inline Resolvers
   if (/hqq\.tv|netu|waaw/i.test(host)) {
-    const resolved = await validateAndReturn(await resolveHqqUrl(url, referer));
+    const resolved = await validateAndReturn(await resolveHqqUrl(url, referer), embedReferer);
     if (resolved) return resolved;
   }
 
   if (/vidhide/i.test(host)) {
-    const resolved = await validateAndReturn(await resolveVidhideUrl(url, referer));
+    const resolved = await validateAndReturn(await resolveVidhideUrl(url, referer), embedReferer);
     if (resolved) return resolved;
   }
 
-  if (/mixdrop|mxdcontent/i.test(host)) {
-    const resolved = await validateAndReturn(await resolveMixdropUrl(url, referer));
+  if (/mixdrop|mxdrop|mxcontent|mxdcontent/i.test(host)) {
+    const resolved = await validateAndReturn(await resolveMixdropUrl(url, referer), embedReferer);
     if (resolved) return resolved;
   }
 
-  if (/dood|dstream|ds2play|doods/i.test(host)) {
-    const resolved = await validateAndReturn(await resolveDoodstreamUrl(url, referer));
+  if (/dood|dstream|ds2play|doods|playmogo|d0000d|d000d/i.test(host)) {
+    const resolved = await validateAndReturn(await resolveDoodstreamUrl(url, referer), embedReferer);
     if (resolved) return resolved;
   }
 
   if (/dropload|dr0pstream|drop\.download/i.test(host)) {
-    const resolved = await validateAndReturn(await resolveDroploadUrl(url, referer));
+    const resolved = await validateAndReturn(await resolveDroploadUrl(url, referer), embedReferer);
     if (resolved) return resolved;
   }
 
@@ -567,7 +536,7 @@ async function resolveEmbedUrl(url, parentUrl = null) {
 
   // 2.5. yt-dlp High-Speed Resolver (as fallback before Puppeteer)
   if (ytdlpResolver.isAvailable) {
-    const ytdlpResolved = await validateAndReturn(await ytdlpResolver.extractWithYtdlp(url, referer));
+    const ytdlpResolved = await validateAndReturn(await ytdlpResolver.extractWithYtdlp(url, referer), embedReferer);
     if (ytdlpResolved) return ytdlpResolved;
   }
 
