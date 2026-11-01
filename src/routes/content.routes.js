@@ -4,6 +4,7 @@ const { dailyRateLimit } = require("../middlewares/rate-limit");
 const pelisplusService = require("../services/pelisplus.service");
 const cuevanaService = require("../services/cuevana.service");
 const repelishdService = require("../services/repelishd.service");
+const playlatinsrcService = require("../services/playlatinsrc.service");
 const downloadService = require("../services/download.service");
 const { resolveEmbedUrl } = require("../utils/resolvers");
 const { ApiError } = require("../utils/api-error");
@@ -377,6 +378,26 @@ router.get(
       success: true,
       data,
       source: "pelisplus",
+    });
+  })
+);
+
+/**
+ * Servidores de una pelicula por su id de IMDb (sin buscar por titulo).
+ * GET /imdb/tt0816692
+ */
+router.get(
+  "/imdb/:imdbId",
+  asyncHandler(async (req, res) => {
+    const imdbId = req.params.imdbId;
+    if (!/^tt\d{6,10}$/.test(imdbId)) {
+      throw new ApiError(400, "El id de IMDb debe tener el formato tt1234567");
+    }
+    const servers = await playlatinsrcService.fetchServersByImdb(imdbId);
+    res.status(200).json({
+      success: true,
+      data: { imdbId, servers },
+      source: "playlatinsrc",
     });
   })
 );

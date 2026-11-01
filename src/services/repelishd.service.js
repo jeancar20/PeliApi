@@ -8,68 +8,18 @@ const axios = require("axios");
 // es el mirror activo hoy con el mismo motor DLE (do=search/subaction=search).
 const BASE_URL = process.env.REPELISHD_DOMAIN || "https://repelishd.courses";
 
-// El player de las fichas ya no es verhdlink.cam (quedó comentado en el HTML): la
-// ficha trae un iframe vacío que su JS rellena con `${PLAYER_DOMAIN}/movie/<imdb>`, y ese
-// player pide sus servidores a POST /api/embed-links con un token que viene en su propia
-// página. Se imita ese recorrido (sin navegador ni cookies).
-const PLAYER_DOMAIN = process.env.REPELISHD_PLAYER_DOMAIN || "https://playlatinsrc.co";
-const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-const PLAYER_LANGUAGES = { latino: "Latino", castellano: "Castellano", subtitulado: "Subtitulado" };
-
-function playerServerKey(name, url) {
-  const base = String(name || "").toLowerCase().split(".")[0].replace(/[^a-z0-9]/g, "");
-  if (base) return base;
-  try {
-    return new URL(url).hostname.replace(/^www\./, "").split(".")[0];
-  } catch (_e) {
-    return "unknown";
-  }
-}
+// El player de las fichas ya no es verhdlink.cam (quedo comentado en el HTML): la ficha trae un
+// iframe vacio que su JS rellena con el player por id de IMDb. Ver playlatinsrc.service.js
+const { fetchServersByImdb } = require("./playlatinsrc.service");
 
 /**
- * Servidores de una película a través del player nuevo. `html` es la ficha de RePelisHD
- * (de ahí sale el id de IMDb: `var imdb = 'tt...'`).
+ * Servidores de una pelicula a traves del player nuevo. `html` es la ficha de RePelisHD
+ * (de ahi sale el id de IMDb: `var imdb = 'tt...'`).
  */
 async function fetchPlayerServers(html, pageUrl) {
   const imdb = (String(html).match(/var\s+imdb\s*=\s*['"](tt\d+)['"]/) || [])[1];
   if (!imdb) return [];
-
-  const playerUrl = `${PLAYER_DOMAIN}/movie/${imdb}`;
-  const page = await axios.get(playerUrl, {
-    timeout: 15000,
-    headers: { "User-Agent": BROWSER_UA, Referer: pageUrl },
-  });
-  const token = (String(page.data).match(/token:\s*["']([A-Za-z0-9._-]+)["']/) || [])[1];
-  if (!token) return [];
-
-  const cookie = (page.headers["set-cookie"] || []).map((c) => c.split(";")[0]).join("; ");
-  const res = await axios.post(
-    `${PLAYER_DOMAIN}/api/embed-links`,
-    { type: "movie", id: imdb, token },
-    {
-      timeout: 15000,
-      headers: {
-        "User-Agent": BROWSER_UA,
-        "Content-Type": "application/json",
-        Origin: PLAYER_DOMAIN,
-        Referer: playerUrl,
-        ...(cookie ? { Cookie: cookie } : {}),
-      },
-    }
-  );
-
-  const sources = Array.isArray(res.data && res.data.sources) ? res.data.sources : [];
-  return sources
-    .filter((src) => src && src.url)
-    .map((src) => {
-      const key = playerServerKey(src.name, src.url);
-      return {
-        name: key.charAt(0).toUpperCase() + key.slice(1),
-        server: key,
-        language: PLAYER_LANGUAGES[src.version] || src.version || "Latino",
-        embedUrl: String(src.url).startsWith("//") ? `https:${src.url}` : src.url,
-      };
-    });
+  return fetchServersByImdb(imdb, pageUrl);
 }
 
 /**
